@@ -1,3 +1,8 @@
+# Define the Source and Destination connection strings using Access Token
+$sourceConn = "Server=tcp:myazuresqlserver.database.windows.net,1433;Database=SourceDB;Authentication=Active Directory Access Token"
+$destinationConn = "Server=tcp:myazuresqlserver.database.windows.net,1433;Database=DestinationDB;Authentication=Active Directory Access Token"
+
+
 # Load the SQL Client Assembly
 Add-Type -Path "C:\Program Files\PackageManagement\NuGet\Packages\Microsoft.Data.SqlClient.5.0.0\lib\netcoreapp3.1\Microsoft.Data.SqlClient.dll"
 
