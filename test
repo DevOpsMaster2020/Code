@@ -1,1 +1,16 @@
-test
+# Load the SQL Client Assembly
+Add-Type -Path "C:\Program Files\PackageManagement\NuGet\Packages\Microsoft.Data.SqlClient.5.0.0\lib\netcoreapp3.1\Microsoft.Data.SqlClient.dll"
+
+# Create SQL Connection for Source
+$sourceConnection = New-Object Microsoft.Data.SqlClient.SqlConnection
+$sourceConnection.ConnectionString = $sourceConn
+$sourceConnection.AccessToken = $accessToken
+
+# Create SQL Connection for Destination
+$destinationConnection = New-Object Microsoft.Data.SqlClient.SqlConnection
+$destinationConnection.ConnectionString = $destinationConn
+$destinationConnection.AccessToken = $accessToken
+
+# Copy Table Data Using DBATools
+Copy-DbaDbTableData -SourceSqlInstance $sourceConnection -SourceDatabase "SourceDB" -SourceTable "Customers" `
+                    -DestinationSqlInstance $destinationConnection -DestinationDatabase "DestinationDB" -DestinationTable "Customers"
