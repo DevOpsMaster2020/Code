@@ -1,0 +1,48 @@
+# Step 1: Retrieve Access Token for Azure SQL
+$tokenResponse = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://database.windows.net/" `
+    -Headers @{Metadata="true"} `
+    -Method GET
+$accessToken = $tokenResponse.access_token
+
+# Step 2: Define Source and Destination Details
+$SourceServer = "my-azure-sql-server.database.windows.net"
+$DestinationServer = "my-azure-sql-server.database.windows.net"
+$SourceDatabase = "SourceDB"   # Azure SQL Database (Single DB)
+$DestinationDatabase = "DestinationDB"  # Azure SQL Database (Single DB)
+$Schema = "dbo"
+
+# Step 3: Define Tables to Copy (Leave empty to copy all tables)
+# Uncomment below to copy specific tables:
+# $selectedTables = @("Customers", "Orders")
+$selectedTables = @()  # Empty means copy all tables
+
+# Step 4: Get All Tables from the Source Database (if no specific tables are selected)
+if ($selectedTables.Count -eq 0) {
+    $tablesQuery = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE';"
+    $tables = Invoke-Sqlcmd -ServerInstance $SourceServer -Database $SourceDatabase -AccessToken $accessToken -Query $tablesQuery
+    $selectedTables = $tables.TABLE_NAME  # Get all tables dynamically
+}
+
+# Step 5: Loop through tables and copy data
+foreach ($table in $selectedTables) {
+    Write-Host "Copying table: $Schema.$table"
+
+    # Ensure correct table name formatting
+    $tableFormatted = "[$Schema].[$table]"
+
+    # Step 5.1: Build SQL Query for Data Transfer
+    $copyQuery = @"
+    INSERT INTO $tableFormatted
+    SELECT * FROM $tableFormatted;
+"@
+
+    # Step 5.2: Execute Query in Destination Database Context
+    try {
+        Invoke-Sqlcmd -ServerInstance $DestinationServer -Database $DestinationDatabase -AccessToken $accessToken -Query $copyQuery
+        Write-Host "✅ Successfully copied $Schema.$table"
+    } catch {
+        Write-Host "❌ Failed to copy $Schema.$table - Error: $_"
+    }
+}
+
+Write-Host "🎉 Data Copy Process Completed!"
