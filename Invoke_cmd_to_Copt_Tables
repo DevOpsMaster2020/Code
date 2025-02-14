@@ -25,13 +25,10 @@ if ($selectedTables.Count -eq 0) {
 
 # Step 5: Loop through tables and copy data
 foreach ($table in $selectedTables) {
-    Write-Host "Copying table: $Schema.$table"
+    Write-Host "🔄 Copying table: $Schema.$table"
 
-    # Ensure correct table name formatting
-    $tableFormatted = "[$Schema].[$table]"
-
-    # Step 5.1: Get Data from Source Database
-    $fetchDataQuery = "SELECT * FROM $tableFormatted;"
+    # Step 5.1: Fetch Data from Source Database
+    $fetchDataQuery = "SELECT * FROM [$Schema].[$table];"
     $sourceData = Invoke-Sqlcmd -ServerInstance $SourceServer -Database $SourceDatabase -AccessToken $accessToken -Query $fetchDataQuery
 
     if ($sourceData.Count -eq 0) {
@@ -39,30 +36,37 @@ foreach ($table in $selectedTables) {
         continue
     }
 
-    # Step 5.2: Build SQL Query for Data Insertion (Manually Construct for Each Row)
+    # Step 5.2: Get Column Names for Dynamic Insertion
     $columns = ($sourceData | Get-Member -MemberType NoteProperty).Name -join ", "
-    $valuesList = @()
 
+    # Step 5.3: Insert Data Row by Row
     foreach ($row in $sourceData) {
-        $values = $columns.Split(", ") | ForEach-Object { "'$($row.$_ )'" }  # Quote string values
-        $valuesList += "($($values -join ', '))"
-    }
+        # Convert each column's value into a properly formatted SQL value
+        $values = @()
+        foreach ($column in ($sourceData | Get-Member -MemberType NoteProperty).Name) {
+            $value = $row.$column
+            if ($null -eq $value) {
+                $values += "NULL"  # Handle NULL values
+            } elseif ($value -match "^[0-9]+(\.[0-9]+)?$") {
+                $values += "$value"  # Numeric values (integers, floats)
+            } else {
+                $safeValue = $value -replace "'", "''"  # Escape single quotes
+                $values += "'$safeValue'"  # Treat as a string
+            }
+        }
 
-    # Convert array to proper SQL VALUES format
-    $valuesToInsert = $valuesList -join ", "
-
-    # Final INSERT Query
-    if ($valuesToInsert -ne "") {
-        $insertQuery = "INSERT INTO $tableFormatted ($columns) VALUES $valuesToInsert;"
-        Write-Host "🚀 Executing SQL Insert for table: $Schema.$table"
+        # Construct final INSERT statement
+        $insertQuery = "INSERT INTO [$Schema].[$table] ($columns) VALUES ($($values -join ', '));"
+        Write-Host "🚀 Inserting row into $Schema.$table"
 
         try {
             Invoke-Sqlcmd -ServerInstance $DestinationServer -Database $DestinationDatabase -AccessToken $accessToken -Query $insertQuery
-            Write-Host "✅ Successfully copied $Schema.$table"
         } catch {
-            Write-Host "❌ Failed to copy $Schema.$table - Error: $_"
+            Write-Host "❌ Failed to insert row in $Schema.$table - Error: $_"
         }
     }
+
+    Write-Host "✅ Successfully copied $Schema.$table"
 }
 
 Write-Host "🎉 Data Copy Process Completed!"
