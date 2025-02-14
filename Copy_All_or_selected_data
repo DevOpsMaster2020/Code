@@ -1,0 +1,39 @@
+# Step 1: Retrieve Access Token for Azure SQL
+$tokenResponse = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://database.windows.net/" `
+    -Headers @{Metadata="true"} `
+    -Method GET
+$accessToken = $tokenResponse.access_token
+
+# Step 2: Define Source and Destination Details
+$SourceServer = "myazuresqlserver.database.windows.net"
+$DestinationServer = "myazuresqlserver.database.windows.net"
+$SourceDatabase = "SourceDB"
+$DestinationDatabase = "DestinationDB"
+$Schema = "dbo"  # Change if needed
+
+# Step 3: Get All Tables from the Source Database
+$tablesQuery = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE';"
+$tables = Invoke-Sqlcmd -ServerInstance $SourceServer -Database $SourceDatabase -AccessToken $accessToken -Query $tablesQuery
+
+# Step 4: Define Tables to Copy (All or a Subset)
+$selectedTables = $tables.TABLE_NAME  # Default: Copy all tables
+# Uncomment and modify the following line to copy only a subset of tables
+# $selectedTables = @("Customers", "Orders")  # Example: Specify only certain tables
+
+# Step 5: Loop through tables and copy data
+foreach ($table in $selectedTables) {
+    Write-Host "Copying table: $Schema.$table"
+
+    # Step 5.1: Build the SQL Query for Data Transfer
+    $copyQuery = "INSERT INTO $DestinationDatabase.$Schema.$table SELECT * FROM $SourceDatabase.$Schema.$table;"
+
+    # Step 5.2: Execute the Query on Destination
+    try {
+        Invoke-Sqlcmd -ServerInstance $DestinationServer -Database $DestinationDatabase -AccessToken $accessToken -Query $copyQuery
+        Write-Host "✅ Successfully copied $Schema.$table"
+    } catch {
+        Write-Host "❌ Failed to copy $Schema.$table - Error: $_"
+    }
+}
+
+Write-Host "🎉 Data Copy Process Completed!"
