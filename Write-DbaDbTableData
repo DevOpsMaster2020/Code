@@ -1,0 +1,50 @@
+# Define source and target database details
+$sourceServer = "<source-database-server>.database.windows.net"
+$targetServer = "<target-database-server>.database.windows.net"
+$sourceDB = "<source-database-name>"
+$targetDB = "<target-database-name>"
+$tablesToCopy = @()  # Specify tables (e.g., @("Table1", "Table2")) or leave empty to copy all tables
+
+# Function to get Access Token for Managed Identity
+function Get-AccessToken {
+    $tokenResponse = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://database.windows.net/" -Method Get -Headers @{Metadata="true"}
+    return $tokenResponse.access_token
+}
+
+# Function to retrieve all table names from the source database
+function Get-TableList {
+    param (
+        [string]$server,
+        [string]$database
+    )
+
+    $accessToken = Get-AccessToken
+
+    $query = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'"
+
+    $tables = Invoke-DbaQuery -SqlInstance $server -Database $database -AccessToken $accessToken -Query $query
+    return $tables.Column1  # Adjust based on the returned column name
+}
+
+# Get table list if not specified
+if ($tablesToCopy.Count -eq 0) {
+    $tablesToCopy = Get-TableList -server $sourceServer -database $sourceDB
+}
+
+# Loop through each table and copy data
+foreach ($table in $tablesToCopy) {
+    Write-Output "Copying table: $table"
+
+    # Read data from source
+    $sourceData = Get-DbaDbTable -SqlInstance $sourceServer -Database $sourceDB -Table $table -AccessToken (Get-AccessToken)
+
+    if ($sourceData.Count -gt 0) {
+        # Write data to target
+        $sourceData | Write-DbaDbTableData -SqlInstance $targetServer -Database $targetDB -Table $table -AccessToken (Get-AccessToken) -AutoCreateTable
+        Write-Output "Successfully copied data for table: $table"
+    } else {
+        Write-Output "Skipping empty table: $table"
+    }
+}
+
+Write-Output "Data copy process completed!"
