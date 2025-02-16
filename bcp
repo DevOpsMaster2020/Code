@@ -1,0 +1,73 @@
+# Define parameters
+$sourceServer = "<source-database-server>.database.windows.net"
+$targetServer = "<target-database-server>.database.windows.net"
+$sourceDB = "<source-database-name>"
+$targetDB = "<target-database-name>"
+$tablesToCopy = @()  # Specify table names (e.g., @("Table1", "Table2")) or leave empty to copy all tables
+
+# Function to get Access Token for Managed Identity
+function Get-AccessToken {
+    $tokenResponse = Invoke-RestMethod -Uri "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://database.windows.net/" -Method Get -Headers @{Metadata="true"}
+    return $tokenResponse.access_token
+}
+
+# Function to execute SQL query and return results
+function Execute-SQLQuery {
+    param (
+        [string]$server,
+        [string]$database,
+        [string]$query
+    )
+
+    $accessToken = Get-AccessToken
+    $connString = "Server=tcp:$server,1433;Database=$database;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;"
+    
+    $sqlConnection = New-Object System.Data.SqlClient.SqlConnection
+    $sqlConnection.ConnectionString = $connString
+    $sqlConnection.AccessToken = $accessToken
+
+    $sqlCommand = $sqlConnection.CreateCommand()
+    $sqlCommand.CommandText = $query
+
+    $sqlConnection.Open()
+    $sqlReader = $sqlCommand.ExecuteReader()
+
+    $results = @()
+    while ($sqlReader.Read()) {
+        $results += $sqlReader.GetString(0)
+    }
+
+    $sqlReader.Close()
+    $sqlConnection.Close()
+    return $results
+}
+
+# Get list of tables if not specified
+if ($tablesToCopy.Count -eq 0) {
+    $query = "SELECT TABLE_SCHEMA + '.' + TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE'"
+    $tablesToCopy = Execute-SQLQuery -server $sourceServer -database $sourceDB -query $query
+}
+
+# Copy data table by table
+foreach ($table in $tablesToCopy) {
+    Write-Output "Copying table: $table"
+
+    # Define temp file for data export
+    $tempFile = "$env:TEMP\$table.csv"
+
+    # Export data from source using BCP
+    $accessToken = Get-AccessToken
+    $bcpExportCmd = "bcp `"$sourceDB.dbo.[$table]`" out `"$tempFile`" -S $sourceServer -d $sourceDB -U token -G -q -c -t,"
+    Write-Output "Running: $bcpExportCmd"
+    Invoke-Expression $bcpExportCmd
+
+    # Import data into target using BCP
+    $bcpImportCmd = "bcp `"$targetDB.dbo.[$table]`" in `"$tempFile`" -S $targetServer -d $targetDB -U token -G -q -c -t,"
+    Write-Output "Running: $bcpImportCmd"
+    Invoke-Expression $bcpImportCmd
+
+    # Cleanup temp file
+    Remove-Item $tempFile -Force
+}
+
+Write-Output "Data copy completed."
