@@ -1,0 +1,42 @@
+# Define parameters
+$SourceSubscriptionId = "<source-subscription-id>"
+$DestinationSubscriptionId = "<destination-subscription-id>"
+$SourceResourceGroup = "<source-resource-group>"
+$DestinationResourceGroup = "<destination-resource-group>"
+$SourceStorageAccount = "<source-storage-account-name>"
+$DestinationStorageAccount = "<destination-storage-account-name>"
+$SourceContainer = "<source-container-name>"
+$DestinationContainer = "<destination-container-name>"
+
+# Authenticate to Azure (if not already authenticated)
+Connect-AzAccount
+
+# Set source subscription context
+Set-AzContext -SubscriptionId $SourceSubscriptionId
+
+# Get Source Storage Account Context
+$SourceStorageKey = (Get-AzStorageAccountKey -ResourceGroupName $SourceResourceGroup -Name $SourceStorageAccount)[0].Value
+$SourceStorageContext = New-AzStorageContext -StorageAccountName $SourceStorageAccount -StorageAccountKey $SourceStorageKey
+
+# Get Source Storage Account Token
+$SourceToken = (New-AzStorageAccountSASToken -Service Blob -ResourceType Service,Container,Object -Permission r -Context $SourceStorageContext -ExpiryTime (Get-Date).AddHours(2))
+
+# Set destination subscription context
+Set-AzContext -SubscriptionId $DestinationSubscriptionId
+
+# Get Destination Storage Account Context
+$DestinationStorageKey = (Get-AzStorageAccountKey -ResourceGroupName $DestinationResourceGroup -Name $DestinationStorageAccount)[0].Value
+$DestinationStorageContext = New-AzStorageContext -StorageAccountName $DestinationStorageAccount -StorageAccountKey $DestinationStorageKey
+
+# Get Destination Storage Account Token
+$DestinationToken = (New-AzStorageAccountSASToken -Service Blob -ResourceType Service,Container,Object -Permission w -Context $DestinationStorageContext -ExpiryTime (Get-Date).AddHours(2))
+
+# Set AzCopy Paths
+$SourceUrl = "https://$SourceStorageAccount.blob.core.windows.net/$SourceContainer?$SourceToken"
+$DestinationUrl = "https://$DestinationStorageAccount.blob.core.windows.net/$DestinationContainer?$DestinationToken"
+
+# Run AzCopy to copy files from source to destination
+Write-Host "Starting copy from $SourceUrl to $DestinationUrl"
+azcopy copy $SourceUrl $DestinationUrl --recursive=true
+
+Write-Host "Copy operation completed successfully."
