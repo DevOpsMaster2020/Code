@@ -1,0 +1,43 @@
+# Define parameters
+$SourceSubscriptionId = "<source-subscription-id>"
+$DestinationSubscriptionId = "<destination-subscription-id>"
+$SourceResourceGroup = "<source-resource-group>"
+$DestinationResourceGroup = "<destination-resource-group>"
+$SourceStorageAccount = "<source-storage-account-name>"
+$DestinationStorageAccount = "<destination-storage-account-name>"
+$SourceContainer = "<source-container-name>"
+$DestinationContainer = "<destination-container-name>"
+
+# Authenticate to Azure (if not already authenticated)
+Connect-AzAccount
+
+# Set Source Subscription Context
+Set-AzContext -SubscriptionId $SourceSubscriptionId
+
+# Get Source Storage Account Context using Azure AD
+$SourceStorageContext = New-AzStorageContext -StorageAccountName $SourceStorageAccount -UseConnectedAccount
+
+# Set Destination Subscription Context
+Set-AzContext -SubscriptionId $DestinationSubscriptionId
+
+# Get Destination Storage Account Context using Azure AD
+$DestinationStorageContext = New-AzStorageContext -StorageAccountName $DestinationStorageAccount -UseConnectedAccount
+
+# Construct AzCopy Source and Destination URLs
+$SourceUrl = "https://$SourceStorageAccount.blob.core.windows.net/$SourceContainer"
+$DestinationUrl = "https://$DestinationStorageAccount.blob.core.windows.net/$DestinationContainer"
+
+# Ensure AzCopy is installed
+$AzCopyPath = (Get-Command azcopy -ErrorAction SilentlyContinue).Source
+if (-not $AzCopyPath) {
+    Write-Host "AzCopy is not installed. Please install it from: https://aka.ms/downloadazcopy"
+    exit
+}
+
+# Start Copy using AzCopy with Azure AD Authentication
+Write-Host "Starting copy from $SourceUrl to $DestinationUrl"
+
+azcopy login
+azcopy copy "$SourceUrl" "$DestinationUrl" --recursive=true
+
+Write-Host "Copy operation completed successfully."
