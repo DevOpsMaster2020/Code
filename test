@@ -1,21 +1,36 @@
-# Define the Source and Destination connection strings using Access Token
-$sourceConn = "Server=tcp:myazuresqlserver.database.windows.net,1433;Database=SourceDB;Authentication=Active Directory Access Token"
-$destinationConn = "Server=tcp:myazuresqlserver.database.windows.net,1433;Database=DestinationDB;Authentication=Active Directory Access Token"
+#!/usr/bin/env bash
+# check_load.sh — returns 0 if Tab1 was loaded today, 1 otherwise.
 
+# --- CONFIGURATION ---
+# You can override these via env vars or on the command line.
+: "${SQL_SERVER:=localhost}"
+: "${SQL_DATABASE:=MyDatabase}"
+: "${SQL_USER:=sa}"
+: "${SQL_PASSWORD:=YourPassword}"
+# ----------------------
 
-# Load the SQL Client Assembly
-Add-Type -Path "C:\Program Files\PackageManagement\NuGet\Packages\Microsoft.Data.SqlClient.5.0.0\lib\netcoreapp3.1\Microsoft.Data.SqlClient.dll"
+# Get today's date in YYYY-MM-DD
+today=$(date +%F)
 
-# Create SQL Connection for Source
-$sourceConnection = New-Object Microsoft.Data.SqlClient.SqlConnection
-$sourceConnection.ConnectionString = $sourceConn
-$sourceConnection.AccessToken = $accessToken
+# Query SQL Server: get max(load) as YYYY-MM-DD
+last_load=$(sqlcmd \
+  -S "${SQL_SERVER}" \
+  -d "${SQL_DATABASE}" \
+  -U "${SQL_USER}" \
+  -P "${SQL_PASSWORD}" \
+  -h -1 -W \
+  -Q "SET NOCOUNT ON;
+      SELECT CONVERT(varchar(10), MAX([load]), 120) 
+        FROM dbo.Tab1;" \
+)
 
-# Create SQL Connection for Destination
-$destinationConnection = New-Object Microsoft.Data.SqlClient.SqlConnection
-$destinationConnection.ConnectionString = $destinationConn
-$destinationConnection.AccessToken = $accessToken
+# Trim whitespace
+last_load=$(echo "$last_load" | xargs)
 
-# Copy Table Data Using DBATools
-Copy-DbaDbTableData -SourceSqlInstance $sourceConnection -SourceDatabase "SourceDB" -SourceTable "Customers" `
-                    -DestinationSqlInstance $destinationConnection -DestinationDatabase "DestinationDB" -DestinationTable "Customers"
+if [[ "$last_load" == "$today" ]]; then
+  echo "Load is current (last load: $last_load)."
+  exit 0
+else
+  echo "ERROR: Load is not current. Last load was $last_load."
+  exit 1
+fi
