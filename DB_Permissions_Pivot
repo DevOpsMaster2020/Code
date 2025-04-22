@@ -23,7 +23,7 @@ FROM (
    FOR DBname IN
    (
    
-  [EDW],[EDWMart],[ManagementInterfaceFeeds]
+  [master]
    
    )
       
