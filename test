@@ -1,31 +1,41 @@
-#!/bin/bash
+# Configuration values (ensure these are properly assigned)
+$SrcInstance = "source_server"
+$SourceDB = "source_db_name"
+$source_token_client = "your_token_endpoint"
+$source_db_rw_service_account = "your_rw_service_account"
+$source_db_rw_secret_path = "your_secret_path"
 
-today=$(date +'%Y-%m-%d')  # SQL datetime format
-maxCount=7
-count=1
-to_email="dl-holt-marketdata@ubs.com"
-EMAIL_UTIL="/path/to/email_util"  # replace this
-SQL_SERVER="your_sql_server"
-SQL_DB="your_database"
-SQL_USER="your_user"
-SQL_PASS="your_password"  # optional if using trusted auth
+# Get Access Token
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$STokenResponse = Invoke-RestMethod -Uri $source_token_client -Headers @{"metadata"="true"} -Method GET
+$accessToken = $STokenResponse.access_token
 
-query="SET NOCOUNT ON; SELECT COUNT(*) FROM ReplicaUpdates WHERE CONVERT(date, last_updated) = '$today';"
+# Define query
+$query = "SELECT loadDate AS last_load FROM t_xf_na_repl_load_date"
 
-while [ $count -lt $maxCount ]; do
-    # Run SQL query and capture output
-    result=$(sqlcmd -S "$SQL_SERVER" -d "$SQL_DB" -U "$SQL_USER" -P "$SQL_PASS" -h -1 -Q "$query" | tr -d '[:space:]')
+# Loop to check the date up to 7 times
+$maxCount = 7
+$count = 1
+$success = $false
 
-    if [ "$result" -gt 0 ]; then
-        $EMAIL_UTIL "$to_email" "Daily Dividend Started" "XF NA REPI tables were updated today. So Dai"
-        /HOLTPROD_SCRIPTS/dividend/dividend_friday_707_blobber_edm.sh
-        break
-    else
-        sleep 10m
-        count=$((count + 1))
-    fi
-done
+while ($count -le $maxCount) {
+    try {
+        $lastload = Invoke-Sqlcmd -Query $query -ServerInstance $SrcInstance -Database $SourceDB -AccessToken $accessToken
+        $today = Get-Date -Format "yyyy/MM/dd"
 
-if [ "$count" -eq "$maxCount" ]; then
-    $EMAIL_UTIL "$to_email" "Daily Dividend Abandoned" "Something is Wrong. The REPL table might not have been updated."
-fi
+        if ($lastload.last_load -eq $today) {
+            Write-Host "Load is up to date, last load was: $($lastload.last_load)" -ForegroundColor Green
+            exit 0
+        } else {
+            Write-Host "Load is NOT up to date, last load was: $($lastload.last_load)" -ForegroundColor Red
+        }
+    } catch {
+        Write-Host "Error occurred: $_" -ForegroundColor Red
+    }
+
+    Start-Sleep -Seconds 60  # Optional: wait between retries
+    $count++
+}
+
+Write-Host "Load check failed after $maxCount attempts." -ForegroundColor Red
+exit 1
