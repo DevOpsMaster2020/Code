@@ -31,17 +31,15 @@ FROM (
 
 
 =========================
-
--- Temporary table to collect audit data
+-- Drop if it already exists
 IF OBJECT_ID('tempdb..#RoleAudit') IS NOT NULL DROP TABLE #RoleAudit;
 
 CREATE TABLE #RoleAudit (
     DatabaseName SYSNAME,
     RoleName SYSNAME,
-    RoleType NVARCHAR(60),
     MemberName SYSNAME,
     MemberType NVARCHAR(60),
-    FixedRoleMembership NVARCHAR(100),
+    EffectiveRole SYSNAME,
     PermissionName NVARCHAR(100),
     PermissionState NVARCHAR(60),
     ObjectName NVARCHAR(260)
@@ -54,43 +52,65 @@ DECLARE db_cursor CURSOR FOR
 SELECT name 
 FROM sys.databases 
 WHERE state_desc = 'ONLINE' 
-  AND database_id > 4; -- exclude system databases
+  AND database_id > 4; -- Skip system DBs
 
 OPEN db_cursor;
 FETCH NEXT FROM db_cursor INTO @dbName;
 
 WHILE @@FETCH_STATUS = 0
 BEGIN
-    SET @sql = N'
-    USE [' + QUOTENAME(@dbName) + N'];
-    
+    SET @sql = '
+    USE [' + QUOTENAME(@dbName) + '];
+
+    ;WITH RoleHierarchy AS (
+        -- Anchor: Direct user->role
+        SELECT 
+            drm.member_principal_id AS MemberId,
+            drm.role_principal_id AS RoleId,
+            1 AS Level
+        FROM sys.database_role_members drm
+
+        UNION ALL
+
+        -- Recursive: role->role (nested roles)
+        SELECT 
+            rh.MemberId,
+            drm.role_principal_id,
+            rh.Level + 1
+        FROM RoleHierarchy rh
+        JOIN sys.database_role_members drm ON rh.RoleId = drm.member_principal_id
+    ),
+    ResolvedRoles AS (
+        SELECT 
+            DB_NAME() AS DatabaseName,
+            users.name AS MemberName,
+            users.type_desc AS MemberType,
+            roles.name AS RoleName
+        FROM RoleHierarchy rh
+        JOIN sys.database_principals users ON rh.MemberId = users.principal_id
+        JOIN sys.database_principals roles ON rh.RoleId = roles.principal_id
+        WHERE users.type IN (''S'', ''U'', ''G'') -- SQL user, Windows user, group
+    )
+
     INSERT INTO #RoleAudit
     SELECT 
-        DB_NAME() AS DatabaseName,
-        role.name AS RoleName,
-        role.type_desc AS RoleType,
-        member.name AS MemberName,
-        member.type_desc AS MemberType,
-        CASE 
-            WHEN fixedrole.name IS NOT NULL THEN fixedrole.name 
-            ELSE NULL 
-        END AS FixedRoleMembership,
+        rr.DatabaseName,
+        rr.RoleName,
+        rr.MemberName,
+        rr.MemberType,
+        fixed.name AS EffectiveRole,
         perm.permission_name,
         perm.state_desc,
         OBJECT_NAME(perm.major_id)
-    FROM 
-        sys.database_principals role
-        LEFT JOIN sys.database_role_members drm ON drm.role_principal_id = role.principal_id
-        LEFT JOIN sys.database_principals member ON drm.member_principal_id = member.principal_id
-        LEFT JOIN sys.database_permissions perm ON perm.grantee_principal_id = role.principal_id
-        LEFT JOIN sys.database_role_members fixed_drm 
-            ON fixed_drm.member_principal_id = role.principal_id
-        LEFT JOIN sys.database_principals fixedrole 
-            ON fixed_drm.role_principal_id = fixedrole.principal_id
-    WHERE 
-        role.type = ''R''; -- database roles
+    FROM ResolvedRoles rr
+    LEFT JOIN sys.database_role_members drm2 ON rr.RoleName = (
+        SELECT name FROM sys.database_principals WHERE principal_id = drm2.member_principal_id
+    )
+    LEFT JOIN sys.database_principals fixed ON drm2.role_principal_id = fixed.principal_id
+    LEFT JOIN sys.database_principals rp ON rp.name = rr.RoleName
+    LEFT JOIN sys.database_permissions perm ON perm.grantee_principal_id = rp.principal_id;
     ';
-    
+
     EXEC sp_executesql @sql;
     FETCH NEXT FROM db_cursor INTO @dbName;
 END
@@ -98,8 +118,9 @@ END
 CLOSE db_cursor;
 DEALLOCATE db_cursor;
 
--- Final result
+-- Output result
 SELECT * 
 FROM #RoleAudit
-ORDER BY DatabaseName, RoleName, MemberName, PermissionName;
+ORDER BY DatabaseName, MemberName, RoleName, EffectiveRole, PermissionName;
+
 
