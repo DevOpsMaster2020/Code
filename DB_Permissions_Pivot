@@ -28,3 +28,78 @@ FROM (
    )
       
    ) AS pivot_table
+
+
+=========================
+
+-- Temporary table to collect audit data
+IF OBJECT_ID('tempdb..#RoleAudit') IS NOT NULL DROP TABLE #RoleAudit;
+
+CREATE TABLE #RoleAudit (
+    DatabaseName SYSNAME,
+    RoleName SYSNAME,
+    RoleType NVARCHAR(60),
+    MemberName SYSNAME,
+    MemberType NVARCHAR(60),
+    FixedRoleMembership NVARCHAR(100),
+    PermissionName NVARCHAR(100),
+    PermissionState NVARCHAR(60),
+    ObjectName NVARCHAR(260)
+);
+
+DECLARE @dbName SYSNAME;
+DECLARE @sql NVARCHAR(MAX);
+
+DECLARE db_cursor CURSOR FOR
+SELECT name 
+FROM sys.databases 
+WHERE state_desc = 'ONLINE' 
+  AND database_id > 4; -- exclude system databases
+
+OPEN db_cursor;
+FETCH NEXT FROM db_cursor INTO @dbName;
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    SET @sql = N'
+    USE [' + QUOTENAME(@dbName) + N'];
+    
+    INSERT INTO #RoleAudit
+    SELECT 
+        DB_NAME() AS DatabaseName,
+        role.name AS RoleName,
+        role.type_desc AS RoleType,
+        member.name AS MemberName,
+        member.type_desc AS MemberType,
+        CASE 
+            WHEN fixedrole.name IS NOT NULL THEN fixedrole.name 
+            ELSE NULL 
+        END AS FixedRoleMembership,
+        perm.permission_name,
+        perm.state_desc,
+        OBJECT_NAME(perm.major_id)
+    FROM 
+        sys.database_principals role
+        LEFT JOIN sys.database_role_members drm ON drm.role_principal_id = role.principal_id
+        LEFT JOIN sys.database_principals member ON drm.member_principal_id = member.principal_id
+        LEFT JOIN sys.database_permissions perm ON perm.grantee_principal_id = role.principal_id
+        LEFT JOIN sys.database_role_members fixed_drm 
+            ON fixed_drm.member_principal_id = role.principal_id
+        LEFT JOIN sys.database_principals fixedrole 
+            ON fixed_drm.role_principal_id = fixedrole.principal_id
+    WHERE 
+        role.type = ''R''; -- database roles
+    ';
+    
+    EXEC sp_executesql @sql;
+    FETCH NEXT FROM db_cursor INTO @dbName;
+END
+
+CLOSE db_cursor;
+DEALLOCATE db_cursor;
+
+-- Final result
+SELECT * 
+FROM #RoleAudit
+ORDER BY DatabaseName, RoleName, MemberName, PermissionName;
+
