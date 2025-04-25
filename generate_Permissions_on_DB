@@ -1,0 +1,88 @@
+WITH perms_cte AS (
+    SELECT
+        USER_NAME(p.grantee_principal_id) AS principal_name,
+        dp.principal_id,
+        dp.type_desc AS principal_type_desc,
+        p.class_desc,
+        OBJECT_NAME(p.major_id) AS object_name,
+        p.permission_name,
+        p.state_desc AS permission_state_desc
+    FROM sys.database_permissions p
+    INNER JOIN sys.database_principals dp
+        ON p.grantee_principal_id = dp.principal_id
+),
+role_members AS (
+    SELECT
+        rm.role_principal_id,
+        rm.member_principal_id,
+        USER_NAME(rm.member_principal_id) AS member_principal_name,
+        USER_NAME(rm.role_principal_id) AS role_name
+    FROM sys.database_role_members rm
+)
+
+-- Now generate full scripts
+SELECT 
+    p.principal_name,
+    p.principal_type_desc,
+    p.class_desc,
+    p.object_name,
+    p.permission_name,
+    p.permission_state_desc,
+    rm.role_name,
+
+    -- Create User or Role safely
+    CASE 
+        WHEN p.principal_type_desc = 'SQL_USER' THEN
+            'IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N''' + p.principal_name + ''')
+BEGIN
+    CREATE USER [' + p.principal_name + '] FOR LOGIN [' + p.principal_name + '];
+END'
+        WHEN p.principal_type_desc = 'DATABASE_ROLE' THEN
+            'IF NOT EXISTS (SELECT 1 FROM sys.database_principals WHERE name = N''' + p.principal_name + ''')
+BEGIN
+    CREATE ROLE [' + p.principal_name + '];
+END'
+        ELSE 
+            '-- Unknown principal type: ' + p.principal_type_desc
+    END AS create_script,
+
+    -- Grant Permission safely
+    CASE 
+        WHEN p.permission_state_desc = 'GRANT' THEN
+            'IF NOT EXISTS (
+    SELECT 1 
+    FROM sys.database_permissions dp
+    INNER JOIN sys.database_principals dp_princ ON dp.grantee_principal_id = dp_princ.principal_id
+    WHERE dp_princ.name = N''' + p.principal_name + ''' 
+      AND dp.permission_name = ''' + p.permission_name + ''' 
+      AND OBJECT_NAME(dp.major_id) = ''' + p.object_name + '''
+)
+BEGIN
+    GRANT ' + p.permission_name + ' ON [' + p.object_name + '] TO [' + p.principal_name + '];
+END'
+        ELSE
+            '-- Skipped non-GRANT permission: ' + p.permission_state_desc
+    END AS grant_script,
+
+    -- Add user to role safely
+    CASE 
+        WHEN rm.role_name IS NOT NULL THEN
+            'IF NOT EXISTS (
+    SELECT 1 
+    FROM sys.database_role_members rm
+    INNER JOIN sys.database_principals roles ON rm.role_principal_id = roles.principal_id
+    INNER JOIN sys.database_principals members ON rm.member_principal_id = members.principal_id
+    WHERE roles.name = N''' + rm.role_name + '''
+      AND members.name = N''' + rm.member_principal_name + '''
+)
+BEGIN
+    ALTER ROLE [' + rm.role_name + '] ADD MEMBER [' + rm.member_principal_name + '];
+END'
+        ELSE
+            NULL
+    END AS add_to_role_script
+
+FROM perms_cte p
+LEFT JOIN role_members rm
+    ON p.principal_id = rm.member_principal_id
+ORDER BY p.principal_name, p.object_name;
