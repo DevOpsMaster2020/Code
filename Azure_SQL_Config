@@ -1,116 +1,95 @@
 param(
-    [Parameter(Mandatory = $true, HelpMessage = 'Azure Subscription ID to query')]
+    [Parameter(Mandatory = $true)]
     [string]$SubscriptionId,
 
-    [Parameter(Mandatory = $false, HelpMessage = 'Output file path for the JSON results')]
-    [string]$OutputPath = "./AzureSqlConfig.json"
+    [Parameter(Mandatory = $false)]
+    [string]$OutputPath = "./AzureSqlConfig.xlsx"
 )
 
-# Ensure Az module is installed
-if (-not (Get-Module -ListAvailable -Name Az)) {
-    Write-Host "Az PowerShell module not found. Installing..." -ForegroundColor Yellow
-    Install-Module -Name Az -Scope CurrentUser -Force
+# Ensure required modules are installed
+function Ensure-Module {
+    param([string]$Name)
+    if (-not (Get-Module -ListAvailable -Name $Name)) {
+        Write-Host "Module $Name not found. Installing..." -ForegroundColor Yellow
+        Install-Module -Name $Name -Scope CurrentUser -Force
+    }
 }
+Ensure-Module -Name Az
+Ensure-Module -Name ImportExcel
 
-# Connect to Azure and select the specified subscription
-Write-Host "Connecting to Azure..." -ForegroundColor Cyan
+# Connect and select subscription
+Write-Host "Connecting to Azure and selecting subscription $SubscriptionId..." -ForegroundColor Cyan
 Connect-AzAccount | Out-Null
 Select-AzSubscription -SubscriptionId $SubscriptionId | Out-Null
 
-# Retrieve all SQL Servers in the subscription
-Write-Host "Retrieving SQL Servers in subscription $SubscriptionId..." -ForegroundColor Cyan
+# Collections
+$serversOutput = @()
+$fgOutput = @()
+$dbOutput = @()
+
+# Retrieve servers
 $servers = Get-AzSqlServer
-
-# Initialize array to hold configuration details
-$configurations = @()
-
 foreach ($server in $servers) {
-    Write-Host "Processing server: $($server.ServerName) in resource group $($server.ResourceGroupName)..." -ForegroundColor Green
-
-    # Get server-level properties
-    $serverConfig = [PSCustomObject]@{
-        ServerName             = $server.ServerName
-        ResourceGroup          = $server.ResourceGroupName
-        Location               = $server.Location
-        Version                = $server.Version
-        FullyQualifiedDomain   = $server.FullyQualifiedDomainName
-        ProvisioningState      = $server.ProvisioningState
-        AdministratorLogin     = $server.SqlServerAdministratorLogin
-        AdministratorFqdn      = $server.AdministratorLoginFqdn
-        IdentityType           = $server.Identity.Type
-        MinimumTlsVersion      = $server.MinimumTlsVersion
-        PublicNetworkAccess    = $server.PublicNetworkAccess
-        SkuName                = $server.Sku.Name
-        SkuTier                = $server.Sku.Tier
-        Tags                   = $server.Tags
+    # Server details
+    $serversOutput += [PSCustomObject]@{
+        SubscriptionId       = $SubscriptionId
+        ResourceGroup        = $server.ResourceGroupName
+        ServerName           = $server.ServerName
+        Location             = $server.Location
+        Version              = $server.Version
+        ProvisioningState    = $server.ProvisioningState
+        UAMI                 = ($server.Identity.UserAssignedIdentities.Keys -join ",")
+        SAMI                 = ($server.Identity.Type -eq 'SystemAssigned')
+        ConnectionPolicy     = (Get-AzSqlServerConnectionPolicy -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName).ConnectionType
     }
 
-    # Retrieve Failover Groups for this server
-    $failoverGroups = @()
+    # Failover groups
     try {
         $fogs = Get-AzSqlServerFailoverGroup -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction Stop
         foreach ($fg in $fogs) {
-            $failoverGroups += [PSCustomObject]@{
-                Name                    = $fg.Name
-                PartnerServer           = $fg.PartnerServerName
-                FailoverPolicy          = $fg.FailoverPolicy
-                GracePeriodWithDataLossDays = $fg.GracePeriodWithDataLossHours / 24
-                ReplicationState        = $fg.ReplicationState
-                ReadWriteEndpoint       = $fg.ReadWriteEndpoint.FailoverPolicy
-                ReadOnlyEndpoint        = $fg.ReadOnlyEndpoint.FailoverAllowConnections
+            $fgOutput += [PSCustomObject]@{
+                ServerName           = $server.ServerName
+                FailoverGroupName    = $fg.Name
+                ReadWriteListener    = $fg.ReadWriteEndpoint.PrimaryRoleServerName
+                ReadOnlyListener     = $fg.ReadOnlyEndpoint.EndpointUrl
+                PrimarySecondary     = if ($fg.FailoverPolicy -eq 'Automatic') { 'Primary: ' + $fg.PrimaryServerName + '; Secondary: ' + $fg.PartnerServerName } else { $null }
+                FailoverPolicy       = $fg.FailoverPolicy
+                GracePeriodDays      = $fg.GracePeriodWithDataLossHours / 24
             }
         }
-    } catch {
-        # No failover groups or error
-    }
+    } catch {}
 
-    # Collect database configurations for this server
-    $dbs = Get-AzSqlDatabase -ServerName $server.ServerName -ResourceGroupName $server.ResourceGroupName
-    $databaseConfigs = @()
+    # Databases
+    $dbs = Get-AzSqlDatabase -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName
     foreach ($db in $dbs) {
-        Write-Host "  - Database: $($db.DatabaseName)" -ForegroundColor Yellow
-        # Get replication links for geo-replication
-        $repLinks = @()
-        try {
-            $links = Get-AzSqlDatabaseReplicationLink -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -DatabaseName $db.DatabaseName -ErrorAction Stop
-            foreach ($link in $links) {
-                $repLinks += [PSCustomObject]@{
-                    PartnerServer        = $link.PartnerServer
-                    PartnerDatabase      = $link.PartnerDatabase
-                    Role                 = $link.Role
-                    ReplicationState     = $link.ReplicationState
-                    LastFailoverTime     = $link.LastFailoverDateTime
-                }
-            }
-        } catch {
-            # No replication links
+        # Backup retention
+        $ret = Get-AzSqlDatabaseBackupShortTermRetentionPolicy -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -DatabaseName $db.DatabaseName
+        $dbOutput += [PSCustomObject]@{
+            ServerName           = $server.ServerName
+            DatabaseName         = $db.DatabaseName
+            Edition              = $db.Edition
+            ServiceObjective     = $db.CurrentServiceObjectiveName
+            MaxSizeGB            = [math]::Round($db.MaxSizeBytes / 1GB, 2)
+            Collation            = $db.Collation
+            Status               = $db.Status
+            CreationDate         = $db.CreationDate
+            BackupRetentionDays  = $ret.RetentionDays
+            ReplicationLinks     = ($(Get-AzSqlDatabaseReplicationLink -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -DatabaseName $db.DatabaseName -ErrorAction SilentlyContinue | %{
+                                        $_.PartnerServer + ':' + $_.PartnerDatabase + ':' + $_.Role
+                                      }) -join ';')
         }
-
-        $databaseConfigs += [PSCustomObject]@{
-            DatabaseName          = $db.DatabaseName
-            Edition               = $db.Edition
-            ServiceObjective      = $db.CurrentServiceObjectiveName
-            MaxSizeBytes          = $db.MaxSizeBytes
-            Collation             = $db.Collation
-            ReadScale             = $db.ReadScale
-            ZoneRedundant         = $db.ZoneRedundant
-            Status                = $db.Status
-            CreationDate          = $db.CreationDate
-            Tags                  = $db.Tags
-            ReplicationLinks      = $repLinks
-        }
-    }
-
-    # Combine server and its databases
-    $configurations += [PSCustomObject]@{
-        Server          = $serverConfig
-        FailoverGroups  = $failoverGroups
-        Databases       = $databaseConfigs
     }
 }
 
-# Export to JSON
-Write-Host "Exporting comprehensive configuration to $OutputPath..." -ForegroundColor Cyan
-$configurations | ConvertTo-Json -Depth 6 | Out-File -FilePath $OutputPath -Encoding utf8
-
-Write-Host "Done! Configuration written to $OutputPath" -ForegroundColor Green
+# Export to Excel with multiple sheets (fallback to CSV if desired)
+if ($OutputPath -like '*.xlsx') {
+    $serversOutput | Export-Excel -Path $OutputPath -WorksheetName 'Servers' -AutoSize
+    $fgOutput      | Export-Excel -Path $OutputPath -WorksheetName 'FailoverGroups' -AutoSize -Append
+    $dbOutput      | Export-Excel -Path $OutputPath -WorksheetName 'Databases' -AutoSize -Append
+    Write-Host "Exported to Excel file: $OutputPath" -ForegroundColor Green
+} else {
+    $serversOutput | Export-Csv -Path "Servers.csv" -NoTypeInformation
+    $fgOutput      | Export-Csv -Path "FailoverGroups.csv" -NoTypeInformation
+    $dbOutput      | Export-Csv -Path "Databases.csv" -NoTypeInformation
+    Write-Host "Exported to CSV files: Servers.csv, FailoverGroups.csv, Databases.csv" -ForegroundColor Green
+}
