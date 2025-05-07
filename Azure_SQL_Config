@@ -1,0 +1,116 @@
+param(
+    [Parameter(Mandatory = $true, HelpMessage = 'Azure Subscription ID to query')]
+    [string]$SubscriptionId,
+
+    [Parameter(Mandatory = $false, HelpMessage = 'Output file path for the JSON results')]
+    [string]$OutputPath = "./AzureSqlConfig.json"
+)
+
+# Ensure Az module is installed
+if (-not (Get-Module -ListAvailable -Name Az)) {
+    Write-Host "Az PowerShell module not found. Installing..." -ForegroundColor Yellow
+    Install-Module -Name Az -Scope CurrentUser -Force
+}
+
+# Connect to Azure and select the specified subscription
+Write-Host "Connecting to Azure..." -ForegroundColor Cyan
+Connect-AzAccount | Out-Null
+Select-AzSubscription -SubscriptionId $SubscriptionId | Out-Null
+
+# Retrieve all SQL Servers in the subscription
+Write-Host "Retrieving SQL Servers in subscription $SubscriptionId..." -ForegroundColor Cyan
+$servers = Get-AzSqlServer
+
+# Initialize array to hold configuration details
+$configurations = @()
+
+foreach ($server in $servers) {
+    Write-Host "Processing server: $($server.ServerName) in resource group $($server.ResourceGroupName)..." -ForegroundColor Green
+
+    # Get server-level properties
+    $serverConfig = [PSCustomObject]@{
+        ServerName             = $server.ServerName
+        ResourceGroup          = $server.ResourceGroupName
+        Location               = $server.Location
+        Version                = $server.Version
+        FullyQualifiedDomain   = $server.FullyQualifiedDomainName
+        ProvisioningState      = $server.ProvisioningState
+        AdministratorLogin     = $server.SqlServerAdministratorLogin
+        AdministratorFqdn      = $server.AdministratorLoginFqdn
+        IdentityType           = $server.Identity.Type
+        MinimumTlsVersion      = $server.MinimumTlsVersion
+        PublicNetworkAccess    = $server.PublicNetworkAccess
+        SkuName                = $server.Sku.Name
+        SkuTier                = $server.Sku.Tier
+        Tags                   = $server.Tags
+    }
+
+    # Retrieve Failover Groups for this server
+    $failoverGroups = @()
+    try {
+        $fogs = Get-AzSqlServerFailoverGroup -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -ErrorAction Stop
+        foreach ($fg in $fogs) {
+            $failoverGroups += [PSCustomObject]@{
+                Name                    = $fg.Name
+                PartnerServer           = $fg.PartnerServerName
+                FailoverPolicy          = $fg.FailoverPolicy
+                GracePeriodWithDataLossDays = $fg.GracePeriodWithDataLossHours / 24
+                ReplicationState        = $fg.ReplicationState
+                ReadWriteEndpoint       = $fg.ReadWriteEndpoint.FailoverPolicy
+                ReadOnlyEndpoint        = $fg.ReadOnlyEndpoint.FailoverAllowConnections
+            }
+        }
+    } catch {
+        # No failover groups or error
+    }
+
+    # Collect database configurations for this server
+    $dbs = Get-AzSqlDatabase -ServerName $server.ServerName -ResourceGroupName $server.ResourceGroupName
+    $databaseConfigs = @()
+    foreach ($db in $dbs) {
+        Write-Host "  - Database: $($db.DatabaseName)" -ForegroundColor Yellow
+        # Get replication links for geo-replication
+        $repLinks = @()
+        try {
+            $links = Get-AzSqlDatabaseReplicationLink -ResourceGroupName $server.ResourceGroupName -ServerName $server.ServerName -DatabaseName $db.DatabaseName -ErrorAction Stop
+            foreach ($link in $links) {
+                $repLinks += [PSCustomObject]@{
+                    PartnerServer        = $link.PartnerServer
+                    PartnerDatabase      = $link.PartnerDatabase
+                    Role                 = $link.Role
+                    ReplicationState     = $link.ReplicationState
+                    LastFailoverTime     = $link.LastFailoverDateTime
+                }
+            }
+        } catch {
+            # No replication links
+        }
+
+        $databaseConfigs += [PSCustomObject]@{
+            DatabaseName          = $db.DatabaseName
+            Edition               = $db.Edition
+            ServiceObjective      = $db.CurrentServiceObjectiveName
+            MaxSizeBytes          = $db.MaxSizeBytes
+            Collation             = $db.Collation
+            ReadScale             = $db.ReadScale
+            ZoneRedundant         = $db.ZoneRedundant
+            Status                = $db.Status
+            CreationDate          = $db.CreationDate
+            Tags                  = $db.Tags
+            ReplicationLinks      = $repLinks
+        }
+    }
+
+    # Combine server and its databases
+    $configurations += [PSCustomObject]@{
+        Server          = $serverConfig
+        FailoverGroups  = $failoverGroups
+        Databases       = $databaseConfigs
+    }
+}
+
+# Export to JSON
+Write-Host "Exporting comprehensive configuration to $OutputPath..." -ForegroundColor Cyan
+$configurations | ConvertTo-Json -Depth 6 | Out-File -FilePath $OutputPath -Encoding utf8
+
+Write-Host "Done! Configuration written to $OutputPath" -ForegroundColor Green
