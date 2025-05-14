@@ -1,0 +1,74 @@
+-- ======================================================
+-- Script: Copy table data across linked servers without cursors
+-- Requirements: SQL Server 2017+ for STRING_AGG
+-- Usage:
+--   1. Set your linked-server and database names below
+--   2. Populate @TablesToCopy
+--   3. (Optional) Set @TruncateTarget = 1 to clear target tables first
+-- ======================================================
+
+DECLARE
+    @SourceServer   SYSNAME = N'MY_SRC_LINKED',         -- << your source linked server
+    @SourceDB       SYSNAME = N'SourceDatabase',
+    @TargetServer   SYSNAME = N'MY_TGT_LINKED',         -- << your target linked server (can be same)
+    @TargetDB       SYSNAME = N'TargetDatabase',
+    @TruncateTarget BIT     = 0;                        -- << 1 = TRUNCATE target tables before insert
+
+-- List of tables to copy (schema + table)
+DECLARE @TablesToCopy TABLE (
+    TableSchema SYSNAME,
+    TableName   SYSNAME
+);
+
+INSERT INTO @TablesToCopy (TableSchema, TableName) VALUES
+    (N'dbo', N'Customer'),
+    (N'dbo', N'Orders'),
+    (N'sales', N'Invoice');  -- << add/remove as needed
+
+--------------------------------------------------------------------------------
+-- 1) Optionally build TRUNCATE statements
+--------------------------------------------------------------------------------
+DECLARE @Truncates NVARCHAR(MAX) = '';
+
+IF @TruncateTarget = 1
+BEGIN
+    SELECT @Truncates = STRING_AGG(
+        'IF EXISTS(SELECT 1 FROM '
+        + QUOTENAME(@TargetServer) + N'.' + QUOTENAME(@TargetDB) + N'.'
+        + QUOTENAME(TableSchema) + N'.' + QUOTENAME(TableName) + N')'
+        + CHAR(13) + '    EXEC(''TRUNCATE TABLE '
+        + QUOTENAME(@TargetServer) + N'.' + QUOTENAME(@TargetDB) + N'.'
+        + QUOTENAME(TableSchema) + N'.' + QUOTENAME(TableName) + ''');'' )'
+    , CHAR(13) + CHAR(10))
+    FROM @TablesToCopy;
+END
+
+--------------------------------------------------------------------------------
+-- 2) Build all INSERT…SELECT statements in one go
+--------------------------------------------------------------------------------
+DECLARE @Inserts NVARCHAR(MAX);
+
+SELECT @Inserts = STRING_AGG(
+    'INSERT INTO ' 
+    + QUOTENAME(@TargetServer) + N'.' + QUOTENAME(@TargetDB) + N'.'
+    + QUOTENAME(TableSchema) + N'.' + QUOTENAME(TableName)
+    + N' SELECT * FROM '
+    + QUOTENAME(@SourceServer) + N'.' + QUOTENAME(@SourceDB) + N'.'
+    + QUOTENAME(TableSchema) + N'.' + QUOTENAME(TableName)
+    + N';'
+, CHAR(13) + CHAR(10))
+FROM @TablesToCopy;
+
+--------------------------------------------------------------------------------
+-- 3) Execute the combined batch
+--------------------------------------------------------------------------------
+DECLARE @sql NVARCHAR(MAX) = 
+    ISNULL(@Truncates + CHAR(13) + CHAR(10), '')
+  + ISNULL(@Inserts, '');
+
+PRINT '--- Generated batch ---';
+PRINT @sql;  -- optionally inspect before running
+
+EXEC sp_executesql @sql;
+
+PRINT '✅ Data copy complete.';
