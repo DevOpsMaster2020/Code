@@ -1,0 +1,6 @@
+SELECT 
+    DB_NAME() AS DatabaseName,
+    CAST(total_log_size_in_bytes AS FLOAT) / 1024 / 1024 / 1024 AS TotalLogSizeGB,
+    CAST(used_log_space_in_bytes AS FLOAT) / 1024 / 1024 / 1024 AS UsedLogSpaceGB,
+    CAST(used_log_space_in_percent AS FLOAT) AS UsedLogSpacePercent
+FROM sys.dm_db_log_space_usage;
