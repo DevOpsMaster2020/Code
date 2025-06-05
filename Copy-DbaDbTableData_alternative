@@ -1,0 +1,5 @@
+# Extract data from source
+$data = Invoke-DbaQuery -SqlInstance $SourceServer -Database $SourceDB -Query "SELECT * FROM [$TableName]"
+
+# Insert into destination
+Write-DbaDataTable -SqlInstance $DestServer -Database $DestDB -InputObject $data -Table $TableName
