@@ -3,3 +3,16 @@ $data = Invoke-DbaQuery -SqlInstance $SourceServer -Database $SourceDB -Query "S
 
 # Insert into destination
 Write-DbaDataTable -SqlInstance $DestServer -Database $DestDB -InputObject $data -Table $TableName
+
+
+
+
+# Query source table
+$data = Invoke-DbaQuery -SqlInstance $SourceServer -Database $SourceDB -Query "SELECT * FROM [$TableName]"
+
+# Only write if data was returned
+if ($data -and $data.Count -gt 0) {
+    Write-DbaDataTable -SqlInstance $DestServer -Database $DestDB -InputObject $data -Table $TableName
+} else {
+    Write-Host "No data found in $TableName — skipping insert." -ForegroundColor Yellow
+}
